@@ -99,14 +99,7 @@ volcano2ioapi.msvolso2l4 v{__version__}
         outf.dimensions.move_to_end('TSTEP', last=False)
         return outf
 
-    # def ll2ij(self, lon, lat):
-    #     gf = None
-    #     return gf.ll2ij(lon, lat)
-
-    # def get_zedges(self, i, j):
-    #     pass
-
-    def layerfrac(self, dateobj, i, j, elevation, cloud_column_height):
+    def layerfrac(self, dateobj, i, j, elevation, cloud_column_height, zedgefile=False):
         """
         Arguments
         ---------
@@ -116,13 +109,17 @@ volcano2ioapi.msvolso2l4 v{__version__}
             meters above sea level of the volcano surface
         cloud_column_height : float
             meters above sea level of the plume height
+        zedgefile: bool
+            If true, create a whole domain file for reuse by other dates
         """
         verbose = self.verbose
-        zfile = self.get_zedgefile(dateobj)
-
+        if zedgefile:
+            self.get_zedgefile(dateobj)
+        zedges = self.get_zedges(dateobj, i, j)
         yp = [0, 1]
-        if 'ZF_ASL' in zfile.variables:
-            ze = zfile.variables['ZF_ASL'][:].mean(0)[:, j, i]
+        if 'ZF_ASL' in zedges:
+            # ze = zfile.variables['ZF_ASL'][:].mean(0)[:, j, i]
+            ze = zedges['ZF_ASL']
             heights = ze[:].copy()
             # If the surface height is below the volcano, reset minimum
             # This should be rare for coarse domains.
@@ -139,8 +136,9 @@ volcano2ioapi.msvolso2l4 v{__version__}
 
             layercdf = np.interp(heights, xp, yp, left=0, right=1)
             layerfrac = np.diff(layercdf)
-        elif 'ZH_ASL' in zfile.variables:
-            xp = ze = heights = zfile.variables['ZH_ASL'][0, 1:, j, i]
+        elif 'ZH_ASL' in zedges:
+            # xp = ze = heights = zfile.variables['ZH_ASL'][0, 1:, j, i]
+            xp = ze = heights = zedges['ZH_ASL'][1:]
             yp = np.arange(heights.size)
             if elevation == cloud_column_height:
                 k = int(np.interp(elevation, heights, yp, left=0).round(0))
@@ -167,7 +165,7 @@ volcano2ioapi.msvolso2l4 v{__version__}
 
     def get_gridfile(self, dateobj):
         """
-        Returns a file with the ll2ij interface
+        Returns a file with the ll2ij interface and HT variable
 
         Arguments
         ---------
@@ -178,6 +176,51 @@ volcano2ioapi.msvolso2l4 v{__version__}
             dateobj.strftime(self._g2dtmpl), format='ioapi'
         )
         return g2f
+
+    def get_metfile(self, dateobj):
+        """
+        Returns a file with the ll2ij interface and ZF and/or ZH variable
+
+        Arguments
+        ---------
+        dateobj : datetime.datetime
+            date must implement strftime
+        """
+        m3f = pnc.pncopen(
+            dateobj.strftime(self._m3dtmpl), format='ioapi'
+        )
+        return m3f
+
+    def get_zedges(self, dateobj, i, j):
+        """
+        From a date and file strftime templates, return ZF_ASL and/or ZH_ASL.
+        This can either be from a cached zfile or will be created on the fly
+        from METCRO3D and GRIDCRO2d files.
+
+        Arguments
+        ---------
+        dateobj : datetime.datetime
+            date must implement strftime
+        """
+        zedges = {}
+        if dateobj in self._zfs:
+            zfile = self._zfs[dateobj]
+            if 'ZF_ASL' in zfile.variables:
+                zedges['ZF_ASL'] = zfile.variables['ZF_ASL'][:, :, j, i].mean(0)
+            if 'ZH_ASL' in zfile.variables:
+                zedges['ZH_ASL'] = zfile.variables['ZH_ASL'][:, :, j, i].mean(0)
+        else:
+            g2f = self.get_gridfile(dateobj)
+            m3f = self.get_metfile(dateobj)
+            sfc = g2f.variables['HT'][:, 0, j, i].mean(0)
+            if 'ZF' in m3f.variables:
+                topz = m3f.variables['ZF'][:, :, j, i].mean(0)
+                zedges['ZF_ASL'] = np.append(sfc, sfc + topz)
+            if 'ZH' in m3f.variables:
+                midz = m3f.variables['ZH'][:, :, j, i].mean(0)
+                zedges['ZH_ASL'] = np.append(sfc, sfc + midz)
+
+        return zedges
 
     def get_zedgefile(self, dateobj):
         """
@@ -477,7 +520,7 @@ class rc2nc(VolcanoAllocator):
             molerate = row['massrate'] * 1000 / 32
 
             layerfrac = self.layerfrac(
-                dateobj, i, j, elevation, cloud_column_height
+                dateobj, i, j, elevation, cloud_column_height, zedgefile=True
             )
 
             if elevation == cloud_column_height:
