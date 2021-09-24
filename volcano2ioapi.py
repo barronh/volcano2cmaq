@@ -179,11 +179,19 @@ volcano2ioapi.msvolso2l4 v{__version__}
         return layerfrac
 
     def get_gridfile(self, dateobj):
+        """
+        Returns a file with the ll2ij interface
+
+        Arguments
+        ---------
+        dateobj : datetime.datetime
+            date must implement strftime
+        """
         g2f = pnc.pncopen(
             dateobj.strftime(self._g2dtmpl), format='ioapi'
         )
         return g2f
-        
+
     def get_zedgefile(self, dateobj):
         """
         From a date and file strftime templates, create a file with ZF and ZH
