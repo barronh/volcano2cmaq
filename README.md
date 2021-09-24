@@ -23,10 +23,13 @@ eruptions that have occured rescently.
 
 ## How To
 
-Open MakeVolcanoEmis.ipynb. Edit the dom and the m3dtmpl and g2dtmpl to point
-to MCIP files with HT (g2dtmpl) and ZF (m3dtmpl). Then, run the cells. Two
-types of output will be created. First, eruption only files from OMI L4.
-Second,
+1. Download inputs
+  * MSVOLSO2L4 for eruptions file is available from
+    https://so2.gsfc.nasa.gov/measures.html
+  * rc files from GEOS-Chem are available from
+    https://ftp.as.harvard.edu/gcgrid/data/ExtData/HEMCO/VOLCANO/
+2. Edit run.cfg so that it points inputs and MCIP files for you domain.
+3. From the command line, run `python -m volcano2ioapi`
 
 ## Temporal allocation
 
@@ -64,13 +67,15 @@ expect finer scales to need empirical adjustment.
 .
 |-- README.md
 |   # This file.
-|-- MakeVolcanoEmis.ipynb
-|   # Driver for creating CMAQ Volcano emissions
-|-- PlotVolcanoEmis.ipynb
-|   # Plotting Jupyter Notebook
-|-- volcano2ioapi.py
+|-- run.cfg
+|   # Example run configuration file
+|-- volcano2cmaq
 |   # Definition of classes that read rc or text files
 |   # and allocate to vertical levels
+|-- MakeVolcanoEmis.ipynb
+|   # Alternative driver for creating CMAQ Volcano emissions
+|-- PlotVolcanoEmis.ipynb
+|   # Plotting Jupyter Notebook
 |-- input
 |   `-- MSVOLSO2L4_20210621.txt
 |       # Eruptive volcanos

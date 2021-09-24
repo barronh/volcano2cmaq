@@ -1,26 +1,13 @@
+__all__ = ['VolcanoAllocator', 'msvolso2l4', 'rc2nc', '__version__']
+
 import os
 import PseudoNetCDF as pnc
 import pandas as pd
 import numpy as np
 from datetime import datetime
-from warnings import warn
+import warnings
 
 __version__ = '0.1.1'
-__doc__ = """
-Code for making CMAQ-ready emission files. Files can be produced from either
-GEOS-Chem's *.rc files (rc2cn) or OMI's eruption database (msvolso2l4).
-
-Outputs for degassing have been checked for consistency with Itahashi et al.[1]
-and are consistent for mass, vertical allocation, and general characterisitics.
-
-For eruptions, the vertical allocation follows the recommendation in the GEOS-
-Chem rc file comments.
-
-[1] Itahashi et al., Incorporation of volcanic SO2 emissions in the Hemispheric
- CMAQ (H-CMAQ) version 5.2 modeling system and assessing their impacts on
- sulfate aerosol over the Northern Hemisphere, GMD 2021.
- https://gmd.copernicus.org/articles/14/5751/2021/
-"""
 
 
 class VolcanoAllocator:
@@ -99,7 +86,7 @@ volcano2ioapi.msvolso2l4 v{__version__}
 [3] {self._m3dtmpl}
 """
         else:
-            warn('Type unknown')
+            warnings.warn('Type unknown')
             filedesc = ''
         outf.FILEDESC = filedesc
         outf.HISTORY = ''
@@ -283,7 +270,7 @@ class msvolso2l4(VolcanoAllocator):
             self, g2dtmpl=g2dtmpl, m3dtmpl=m3dtmpl, cache=True, verbose=verbose
         )
 
-    def allocate(self, dateobj, outpath=None, overwrite=False, **save_kw):
+    def allocate(self, dateobj):
         """
         Allocate volcanic emissions from date to a IOAPI file.
 
@@ -293,11 +280,6 @@ class msvolso2l4(VolcanoAllocator):
             Date to allocate
         """
         verbose = self.verbose
-        if outpath is not None:
-            if os.path.exists(outpath) and not overwrite:
-                if verbose > 0:
-                    print(f'{outpath} exists')
-                return None
 
         if verbose > 0:
             print('Querying data')
@@ -376,12 +358,47 @@ class msvolso2l4(VolcanoAllocator):
             if self.verbose > 0:
                 print(outvals)
             outv[0, :, j, i] += outvals
-        if outpath is not None:
-            save_kw.setdefault('complevel', 1)
-            diskf = outf.save(outpath, verbose=verbose, **save_kw)
-            return diskf
-        else:
-            return outf
+
+        return outf
+
+    def to_netcdf(self, dateobj, outtmpl, overwrite=False, verbose=0, **save_kw):
+        """
+        Arguments
+        ---------
+        dateobj : datetime.datetime
+            Date to allocate
+        outtmpl : str
+            String with optional strftime templates to create an out path.
+        overwrite : bool
+            If False, skip files that already exist. Return None
+        verbose : int
+            increasing levels of verbosity
+        save_kw : mappable
+            Passed to PseudoNetCDFFile.save
+
+        Returns
+        -------
+        * None if the file exists
+        * 0 if there was no relevant data
+        * outpath if file was made
+        """
+        verbose = self.verbose
+        outpath = dateobj.strftime(outtmpl)
+        if os.path.exists(outpath) and not overwrite:
+            if verbose > 0:
+                print(f'{outpath} exists')
+            return None
+
+        outf = self.allocate(dateobj)
+        if outf is None:
+            return 0
+
+        dirpath = os.path.dirname(outpath)
+        os.makedirs(dirpath, exist_ok=True)
+        save_kw.setdefault('complevel', 1)
+        diskf = outf.save(outpath, verbose=verbose, **save_kw)
+        diskf.close()
+        return outpath
 
 
 class rc2nc(VolcanoAllocator):
@@ -414,7 +431,7 @@ class rc2nc(VolcanoAllocator):
             self, cache=True, m3dtmpl=m3dtmpl, g2dtmpl=g2dtmpl, verbose=verbose
         )
 
-    def addrcfile(self, dateobj, rcpath, efile):
+    def allocate(self, dateobj, rcpath):
         """
         Add mass from rcpath to emission file (efile) using the heights
         from the height file (zfile).
@@ -430,10 +447,8 @@ class rc2nc(VolcanoAllocator):
             elevation (m), and cloud_column_height (m). These files are
             GEOS-Chem inputs
             https://ftp.as.harvard.edu/gcgrid/data/ExtData/HEMCO/VOLCANO/
-        efile : netcdf-like
-            File for output that has IOAPI properties, implements ll2ij, and
-            has SO2_ERUPT and SO2_DEGAS variables
         """
+        efile = self._prepoutfile(dateobj)
         verbose = self.verbose
         # lat_degrees lon_degrees sulfure_kgSps elevation_m
         # cloud_column_height_m
@@ -450,8 +465,8 @@ class rc2nc(VolcanoAllocator):
             print('All degas (True); All erupt (False); Both (True, False)')
             print(np.unique(vdata.elev == vdata.cch))
         udata = vdata.query(
-          f'(I >= 0) and (I < {efile.NCOLS})'
-          + f' and (J >= 0) and (J < {efile.NROWS})'
+            f'(I >= 0) and (I < {efile.NCOLS})'
+            + f' and (J >= 0) and (J < {efile.NROWS})'
         )
         ijecs = udata.groupby(['I', 'J', 'elev', 'cch']).sum()
         levels = np.zeros((44,), dtype='f')
@@ -472,35 +487,50 @@ class rc2nc(VolcanoAllocator):
 
             outv[0, :, j, i] += molerate * layerfrac
 
-    def allocate(self, verbose=0, outpath=None, overwrite=False, **save_kw):
+        return efile
+
+    def to_netcdf(self, outtmpl, overwrite=False, verbose=0, **save_kw):
         """
         Use all rcpaths supplied at intialization to create an output.
 
         Arguments
         ---------
+        dateobj : datetime.datetime
+            Date to allocate
+        outtmpl : str
+            String with optional strftime templates to create an out path.
+        overwrite : bool
+            If False, skip files that already exist. Return None
         verbose : int
             increasing levels of verbosity
+        save_kw : mappable
+            Passed to PseudoNetCDFFile.save
+
+        Returns
+        -------
+        * None if the file exists
+        * outpath if file was made
         """
         verbose = self.verbose
-        if outpath is not None:
-            if os.path.exists(outpath) and not overwrite:
-                if verbose > 0:
-                    print(f'{outpath} exists')
-                return None
-
         rcpaths = self._rcpaths
         sdatestr = rcpaths[0].split('.')[-2]
         sdateobj = datetime.strptime(sdatestr, '%Y%m%d')
-        efile = self._prepoutfile(sdateobj)
-        efiles = [efile.copy() for i in rcpaths]
+        outpath = sdateobj.strftime(outtmpl)
+        if os.path.exists(outpath) and not overwrite:
+            if verbose > 0:
+                print(f'{outpath} exists')
+            return None
+
         # edatestr = rcpaths[-1].split('.')[-2]
-        for efile, rcpath in zip(efiles, rcpaths):
+        efiles = []
+        for rcpath in rcpaths:
             datestr = rcpath.split('.')[-2]
             dateobj = datetime.strptime(datestr, '%Y%m%d')
+            efile = self.allocate(dateobj, rcpath)
             efile.SDATE = int(dateobj.strftime('%Y%j'))
             efile.STIME = 0
             efile.TSTEP = 240000
-            self.addrcfile(dateobj, rcpath, efile)
+            efiles.append(efile)
 
         sdate = datetime.strptime(sdatestr, '%Y%m%d')
         # edate = datetime.strptime(edatestr, '%Y%m%d')
@@ -511,9 +541,10 @@ class rc2nc(VolcanoAllocator):
         outf.updatetflag(overwrite=True)
         outf.variables.move_to_end('TFLAG', last=False)
         outf.dimensions.move_to_end('TSTEP', last=False)
-        if outpath is not None:
-            save_kw.setdefault('complevel', 1)
-            diskf = outf.save(outpath, verbose=verbose, **save_kw)
-            return diskf
-        else:
-            return outf
+
+        dirpath = os.path.dirname(outpath)
+        os.makedirs(dirpath, exist_ok=True)
+        save_kw.setdefault('complevel', 1)
+        diskf = outf.save(outpath, verbose=verbose, **save_kw)
+        diskf.close()
+        return outpath
