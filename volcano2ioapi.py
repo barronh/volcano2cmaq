@@ -1,3 +1,4 @@
+import os
 import PseudoNetCDF as pnc
 import pandas as pd
 import numpy as np
@@ -177,6 +178,12 @@ volcano2ioapi.msvolso2l4 v{__version__}
 
         return layerfrac
 
+    def get_gridfile(self, dateobj):
+        g2f = pnc.pncopen(
+            dateobj.strftime(self._g2dtmpl), format='ioapi'
+        )
+        return g2f
+        
     def get_zedgefile(self, dateobj):
         """
         From a date and file strftime templates, create a file with ZF and ZH
@@ -268,7 +275,7 @@ class msvolso2l4(VolcanoAllocator):
             self, g2dtmpl=g2dtmpl, m3dtmpl=m3dtmpl, cache=True, verbose=verbose
         )
 
-    def allocate(self, dateobj):
+    def allocate(self, dateobj, outpath=None, overwrite=False, **save_kw):
         """
         Allocate volcanic emissions from date to a IOAPI file.
 
@@ -278,6 +285,12 @@ class msvolso2l4(VolcanoAllocator):
             Date to allocate
         """
         verbose = self.verbose
+        if outpath is not None:
+            if os.path.exists(outpath) and not overwrite:
+                if verbose > 0:
+                    print(f'{outpath} exists')
+                return None
+
         if verbose > 0:
             print('Querying data')
 
@@ -300,14 +313,14 @@ class msvolso2l4(VolcanoAllocator):
             alldata.loc[alldata['p_alt'].isna(), 'p_alt_est']
         )
 
-        zfile = self.get_zedgefile(dateobj)
-        alldata['I'], alldata['J'] = zfile.ll2ij(
+        gfile = self.get_gridfile(dateobj)
+        alldata['I'], alldata['J'] = gfile.ll2ij(
             alldata['lon'], alldata['lat']
         )
 
         # Subset data for within the domain
         data = alldata.query(
-            f'I >= 0 and I < {zfile.NCOLS} and J >= 0 and J < {zfile.NROWS}'
+            f'I >= 0 and I < {gfile.NCOLS} and J >= 0 and J < {gfile.NROWS}'
         )
         if data.shape[0] == 0:
             if verbose > 0:
@@ -355,13 +368,17 @@ class msvolso2l4(VolcanoAllocator):
             if self.verbose > 0:
                 print(outvals)
             outv[0, :, j, i] += outvals
-
-        return outf
+        if outpath is not None:
+            save_kw.setdefault('complevel', 1)
+            diskf = outf.save(outpath, verbose=verbose, **save_kw)
+            return diskf
+        else:
+            return outf
 
 
 class rc2nc(VolcanoAllocator):
     def __init__(
-        self, rcpaths, m3dtmpl, g2dtmpl, outpath=None, process=True, verbose=0
+        self, rcpaths, m3dtmpl, g2dtmpl, process=True, verbose=0,
     ):
         """
         rc2nc reads text files from GEOS-Chem and HEMCO's volcano extension
@@ -384,16 +401,10 @@ class rc2nc(VolcanoAllocator):
         """
         self._rcpaths = rcpaths
         sdatestr = rcpaths[0].split('.')[-2]
-        edatestr = rcpaths[-1].split('.')[-2]
-        if outpath is None:
-            outpath = f'output/Volcano.{sdatestr}-{edatestr}.nc'
-        self.outpath = outpath
         self.sdateobj = datetime.strptime(sdatestr, '%Y%m%d')
         VolcanoAllocator.__init__(
             self, cache=True, m3dtmpl=m3dtmpl, g2dtmpl=g2dtmpl, verbose=verbose
         )
-        if process:
-            self.allocate()
 
     def addrcfile(self, dateobj, rcpath, efile):
         """
@@ -453,7 +464,7 @@ class rc2nc(VolcanoAllocator):
 
             outv[0, :, j, i] += molerate * layerfrac
 
-    def allocate(self, verbose=0):
+    def allocate(self, verbose=0, outpath=None, overwrite=False, **save_kw):
         """
         Use all rcpaths supplied at intialization to create an output.
 
@@ -463,6 +474,12 @@ class rc2nc(VolcanoAllocator):
             increasing levels of verbosity
         """
         verbose = self.verbose
+        if outpath is not None:
+            if os.path.exists(outpath) and not overwrite:
+                if verbose > 0:
+                    print(f'{outpath} exists')
+                return None
+
         rcpaths = self._rcpaths
         sdatestr = rcpaths[0].split('.')[-2]
         sdateobj = datetime.strptime(sdatestr, '%Y%m%d')
@@ -486,4 +503,9 @@ class rc2nc(VolcanoAllocator):
         outf.updatetflag(overwrite=True)
         outf.variables.move_to_end('TFLAG', last=False)
         outf.dimensions.move_to_end('TSTEP', last=False)
-        outf.save(self.outpath, complevel=1, verbose=verbose)
+        if outpath is not None:
+            save_kw.setdefault('complevel', 1)
+            diskf = outf.save(outpath, verbose=verbose, **save_kw)
+            return diskf
+        else:
+            return outf
