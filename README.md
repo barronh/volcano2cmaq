@@ -23,13 +23,47 @@ eruptions that have occured rescently.
 
 ## How To
 
-1. Download inputs
-  * MSVOLSO2L4 for eruptions file is available from
-    https://so2.gsfc.nasa.gov/measures.html
-  * rc files from GEOS-Chem are available from
-    https://ftp.as.harvard.edu/gcgrid/data/ExtData/HEMCO/VOLCANO/
-2. Edit run.cfg so that it points inputs and MCIP files for you domain.
-3. From the command line, run `python -m volcano2ioapi`
+### Use MSVOLSO2L4 from NASA GSFC
+
+1. Download the "SO2 emissions by explosive volcanic eruptions" from https://so2.gsfc.nasa.gov/measures.html (e.g., MSVOLSO2L4_20260129.txt)
+2. Get location of MCIP files GRIDCRO2D and METCRO3D
+3. Run the code below
+
+```python
+import pandas as pd
+import volcano2cmaq
+
+outpath = 'outputs/MSVOLSO2L4_20260129_1188NHEMI2_202007.nc'
+inpath = 'inputs/MSVOLSO2L4_20260129.txt'
+g2dtmpl = 'inputs/mcip/GRIDCRO2D_1188NHEMI2'
+m3dtmpl = 'inputs/mcip/METCRO3D_1188NHEMI2'
+
+dates = pd.date_range('2020-06-30', '2020-08-01')
+
+vp = volcano2cmaq.msvolso2l4(inpath, m3dtmpl, g2dtmpl, verbose=9)
+vp.to_netcdf(dates, outpath)
+```
+
+### Use GEOS-Chem rc files
+
+1. Download text files from GEOS-Chem at http://geoschemdata.wustl.edu/ExtData/HEMCO/VOLCANO.
+2. Get location of MCIP files GRIDCRO2D and METCRO3D
+3. Run the code below
+
+```python
+import pandas as pd
+import volcano2cmaq
+
+outpath = 'outputs/so2_volcanic_emissions_Carns_1188NHEMI2_202007.nc'
+g2dtmpl = 'inputs/mcip/GRIDCRO2D_1188NHEMI2'
+m3dtmpl = 'inputs/mcip/METCRO3D_1188NHEMI2'
+
+dates = pd.date_range('2020-06-30', '2020-08-01')
+rcpaths = dates.strftime(f'HEMCO/VOLCANO/v2021-09/%Y/%m/so2_volcanic_emissions_Carns.%Y%m%d.rc')
+
+vp = volcano2cmaq.rc2nc(rcpaths, m3dtmpl, g2dtmpl, verbose=9)
+vp.to_netcdf(outpath)
+```
 
 ## Temporal allocation
 

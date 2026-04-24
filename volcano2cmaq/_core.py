@@ -111,14 +111,27 @@ volcano2ioapi.msvolso2l4 v{__version__}
             meters above sea level of the plume height
         zedgefile: bool
             If true, create a whole domain file for reuse by other dates
+
+        Notes
+        -----
+        Following GEOS-Chem implementation of rc vertical allocation:
+        VOLCANO/v2021-09/2020/07/so2_volcanic_emissions_Carns.20200701.rc
+        ### If elevation=cloud_column_height, emit in layer of elevation
+        ### else, emit in top 1/3 of cloud_column_height
         """
         verbose = self.verbose
         if zedgefile:
             self.get_zedgefile(dateobj)
         zedges = self.get_zedges(dateobj, i, j)
         yp = [0, 1]
+        # If elevation=cloud_column_height, emit in layer of elevation
+        # else, emit in top 1/3 of cloud_column_height
+        # so calculating bottom and top of the 1/3.
+        bottom = (
+            cloud_column_height - (cloud_column_height - elevation) / 3
+        )
+        top = cloud_column_height
         if 'ZF_ASL' in zedges:
-            # ze = zfile.variables['ZF_ASL'][:].mean(0)[:, j, i]
             ze = zedges['ZF_ASL']
             heights = ze[:].copy()
             # If the surface height is below the volcano, reset minimum
@@ -130,28 +143,23 @@ volcano2ioapi.msvolso2l4 v{__version__}
                     elevation, cloud_column_height + 0.001
                 ])
             else:
-                xp = np.array([
-                    elevation, cloud_column_height
-                ])
+                # emit proportional to dZ in the top third
+                xp = np.array([bottom, top])
 
             layercdf = np.interp(heights, xp, yp, left=0, right=1)
             layerfrac = np.diff(layercdf)
         elif 'ZH_ASL' in zedges:
-            # xp = ze = heights = zfile.variables['ZH_ASL'][0, 1:, j, i]
-            xp = ze = heights = zedges['ZH_ASL'][1:]
+            xp = ze = heights = zedges['ZH_ASL'][1:]  # LAY=0 is sfc elevation
             yp = np.arange(heights.size)
             if elevation == cloud_column_height:
                 k = int(np.interp(elevation, heights, yp, left=0).round(0))
                 layerfrac = np.zeros_like(heights)
                 layerfrac[k] = 1
             else:
-                bottom = (
-                    cloud_column_height - (cloud_column_height - elevation) / 3
-                )
-                top = cloud_column_height
+                # emit in equal layers in the top third
                 intopthird = (heights > bottom) & (heights < top)
                 layerfrac = intopthird / intopthird.sum()
-                assert(layerfrac.sum().round(5) == 1)
+                assert (layerfrac.sum().round(5) == 1)
         else:
             raise KeyError('Must have either ZF_ASL or ZH_ASL')
 
@@ -280,7 +288,7 @@ volcano2ioapi.msvolso2l4 v{__version__}
 
 class msvolso2l4(VolcanoAllocator):
     def __init__(
-        self, inpath, cache=True, m3dtmpl=None, g2dtmpl=None, verbose=0
+        self, inpath, m3dtmpl, g2dtmpl, cache=True, verbose=0
     ):
         """
         OMI Volcano eruption text file processor
@@ -328,9 +336,7 @@ class msvolso2l4(VolcanoAllocator):
             print('Querying data')
 
         # Query data for same day data
-        alldata = self._data.query(
-            f'DateObj == "{dateobj.strftime("%Y-%m-%d")}"'
-        ).copy()
+        alldata = self._data.loc[self._data.DateObj == dateobj].copy()
 
         if alldata.shape[0] == 0:
             if verbose > 0:
@@ -374,11 +380,9 @@ class msvolso2l4(VolcanoAllocator):
         if verbose > 0:
             print('Calculating plume range')
 
+        # Start is the vertical elevation (top 1/3 is calculated in layerfrac)
         adata['stop'] = adata['p_alt'] * 1000
-        # Calculate top 1/3 bottom
-        adata['start'] = (
-            adata['stop'] - (adata['stop'] - adata['v_alt'] * 1000) / 3
-        )
+        adata['start'] = adata['v_alt'] * 1000
 
         if verbose > 0:
             print('Preparing output file')
@@ -425,16 +429,32 @@ class msvolso2l4(VolcanoAllocator):
         * 0 if there was no relevant data
         * outpath if file was made
         """
+        from collections.abc import Iterable
+
         verbose = self.verbose
-        outpath = dateobj.strftime(outtmpl)
+        isrange = isinstance(dateobj, Iterable)
+        if isrange:
+            outpath = dateobj[0].strftime(outtmpl)
+        else:
+            outpath = dateobj.strftime(outtmpl)
+
         if os.path.exists(outpath) and not overwrite:
             if verbose > 0:
                 print(f'{outpath} exists')
             return None
 
-        outf = self.allocate(dateobj)
-        if outf is None:
-            return 0
+        if isrange:
+            outf = []
+            for date in dateobj:
+                tmpf = self.allocate(date)
+                if tmpf is None:
+                    tmpf = self._prepoutfile(date, degas=False)
+                outf.append(tmpf)
+            outf = outf[0].stack(outf[1:], 'TSTEP')
+        else:
+            outf = self.allocate(dateobj)
+            if outf is None:
+                return 0
 
         dirpath = os.path.dirname(outpath)
         os.makedirs(dirpath, exist_ok=True)
@@ -446,7 +466,7 @@ class msvolso2l4(VolcanoAllocator):
 
 class rc2nc(VolcanoAllocator):
     def __init__(
-        self, rcpaths, m3dtmpl, g2dtmpl, process=True, verbose=0,
+        self, rcpaths, m3dtmpl, g2dtmpl, dateobjs=None, verbose=0
     ):
         """
         rc2nc reads text files from GEOS-Chem and HEMCO's volcano extension
@@ -454,22 +474,55 @@ class rc2nc(VolcanoAllocator):
 
         Arguments
         ---------
-        rcpaths : list
-            One or more paths. See addrcfile for more details.
+        rcpaths : list or str
+            List, One or more paths. See addrcfile for more details.
+            A strftime string can be provided with dateobjs,
+            A glob string can be provided if it conforms to *.%Y%m%d.rc.
         outpath : str
             If None, defaults to output/Volcano.STARTDATE-ENDDATE.nc
-        process : bool
-            If true, run default process
         verbose : int
             increasing levels of verbosity
+        dateobjs : iterable
+            Iterable of date objects. Optional, defaults to *.%Y%m%d.rc.
 
         Notes
         -----
         see VolcanoAllocator for other keywords
+
+        Example
+        -------
+
+        ```
+        import pandas as pd
+        import volcano2cmaq
+        from glob import glob
+
+        mroot = 'mcip'
+        g2dtmpl = f'{mroot}/GRIDCRO2D.108NHEMI2.44L.%y%m%d'
+        m3dtmpl = f'{mroot}/METCRO3D.108NHEMI2.44L.%y%m%d'
+
+        hroot = 'HEMCO'
+        dates = pd.date_range('2022-06-30', '2022-08-01')
+        rcpaths = dates.strftime(f'{hroot}/VOLCANO/v2021-09/%Y/%m/so2_volcanic_emissions_Carns.%Y%m%d.rc')
+
+        vp = volcano2cmaq.rc2nc(rcpaths, m3dtmpl, g2dtmpl, verbose=9)
+        vp.to_netcdf(dates[0].strftime('./so2_volcanic_emissions_Carns_%Y%m.nc'))
+        ```
         """
+        import glob
+        if dateobjs is None:
+            if isinstance(rcpaths, str):
+                rcpaths = sorted(glob.glob(rcpaths))
+            dateobjs = [
+                datetime.strptime(rcpath.split('.')[-2], '%Y%m%d')
+                for rcpath in rcpaths
+            ]
+        else:
+            if isinstance(rcpaths, str):
+                rcpaths = [dateo.strftime(rcpaths) for dateo in dateobjs]
+
         self._rcpaths = rcpaths
-        sdatestr = rcpaths[0].split('.')[-2]
-        self.sdateobj = datetime.strptime(sdatestr, '%Y%m%d')
+        self._dateobjs = dateobjs
         VolcanoAllocator.__init__(
             self, cache=True, m3dtmpl=m3dtmpl, g2dtmpl=g2dtmpl, verbose=verbose
         )
@@ -530,6 +583,10 @@ class rc2nc(VolcanoAllocator):
 
             outv[0, :, j, i] += molerate * layerfrac
 
+        efile.SDATE = int(dateobj.strftime('%Y%j'))
+        efile.STIME = 0
+        efile.TSTEP = 240000
+
         return efile
 
     def to_netcdf(self, outtmpl, overwrite=False, verbose=0, **save_kw):
@@ -556,27 +613,24 @@ class rc2nc(VolcanoAllocator):
         """
         verbose = self.verbose
         rcpaths = self._rcpaths
-        sdatestr = rcpaths[0].split('.')[-2]
-        sdateobj = datetime.strptime(sdatestr, '%Y%m%d')
-        outpath = sdateobj.strftime(outtmpl)
+        dateobjs = self._dateobjs
+        sdate = dateobjs[0]
+        outpath = sdate.strftime(outtmpl)
         if os.path.exists(outpath) and not overwrite:
             if verbose > 0:
                 print(f'{outpath} exists')
             return None
 
-        # edatestr = rcpaths[-1].split('.')[-2]
         efiles = []
-        for rcpath in rcpaths:
-            datestr = rcpath.split('.')[-2]
-            dateobj = datetime.strptime(datestr, '%Y%m%d')
-            efile = self.allocate(dateobj, rcpath)
-            efile.SDATE = int(dateobj.strftime('%Y%j'))
-            efile.STIME = 0
-            efile.TSTEP = 240000
+        for dateobj, rcpath in zip(dateobjs, rcpaths):
+            if os.path.exists(rcpath):
+                efile = self.allocate(dateobj, rcpath)
+            else:
+                # create an empty file if not present
+                efile = self._prepoutfile(dateobj)
+
             efiles.append(efile)
 
-        sdate = datetime.strptime(sdatestr, '%Y%m%d')
-        # edate = datetime.strptime(edatestr, '%Y%m%d')
         outf = efiles[0].stack(efiles[1:], 'TSTEP')
         outf.SDATE = int(sdate.strftime('%Y%j'))
         outf.STIME = 0
@@ -586,7 +640,8 @@ class rc2nc(VolcanoAllocator):
         outf.dimensions.move_to_end('TSTEP', last=False)
 
         dirpath = os.path.dirname(outpath)
-        os.makedirs(dirpath, exist_ok=True)
+        if dirpath != '':
+            os.makedirs(dirpath, exist_ok=True)
         save_kw.setdefault('complevel', 1)
         diskf = outf.save(outpath, verbose=verbose, **save_kw)
         diskf.close()
