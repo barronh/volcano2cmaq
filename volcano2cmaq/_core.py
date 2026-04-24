@@ -626,6 +626,7 @@ class rc2nc(VolcanoAllocator):
             if os.path.exists(rcpath):
                 efile = self.allocate(dateobj, rcpath)
             else:
+                print(dateobj, 'rc not avail')
                 # create an empty file if not present
                 efile = self._prepoutfile(dateobj)
 
